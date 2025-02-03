@@ -46,7 +46,7 @@ fn draw_ui(mut query: Query<&mut EguiContext, With<MainWindow>>) {
 struct MainWindow;
 fn setup(mut cmds: Commands) {
     let window = cmds.spawn(MainWindow).id();
-    cmds.push(SpawnSpatialEguiWindowCommand {
+    cmds.queue(SpawnSpatialEguiWindowCommand {
         target_entity: Some(window),
         position: Vec3::new(0.0, 1.0, -0.5),
         rotation: Quat::IDENTITY,
@@ -54,7 +54,7 @@ fn setup(mut cmds: Commands) {
         height: 1.0,
         unlit: true,
     });
-    cmds.spawn(Camera3dBundle::default())
+    cmds.spawn(Camera3d::default())
         .insert(Transform::from_xyz(1.0, 3.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y))
         .insert(PanOrbitCamera::default());
 }
