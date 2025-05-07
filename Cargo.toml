@@ -1,17 +1,19 @@
 [package]
 name = "bevy_spatial_egui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-bevy = "0.14.2"
-bevy_egui = "0.29.0"
-bevy-suis = { git = "https://github.com/Schmarni-Dev/bevy-suis", branch = "further_work" }
+bevy = { version = "0.16", default-features = false }
+bevy_egui = { version = "0.34"}
+bevy-suis = {git = "https://github.com/MiniMinerX/bevy-suis.git", branch = "dev-0.16"}
+wgpu-types = { version = "24.0"}
 
 [dev-dependencies]
-bevy_panorbit_camera = "0.19.3"
-bevy_mod_openxr = { git = "https://github.com/awtterpip/bevy_oxr" }
-bevy_xr_utils = { git = "https://github.com/awtterpip/bevy_oxr" }
+bevy_panorbit_camera = "0.26"
+bevy_mod_xr = { git = "https://github.com/awtterpip/bevy_oxr.git"}
+bevy_mod_openxr = { git = "https://github.com/awtterpip/bevy_oxr.git"}
+bevy_xr_utils = { git = "https://github.com/awtterpip/bevy_oxr.git"}
 
 [lints.clippy]
 too_many_arguments = "allow"
