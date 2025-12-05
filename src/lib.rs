@@ -2,18 +2,20 @@ pub mod window_mesh;
 
 use bevy::{
     asset::RenderAssetUsages,
-    color::palettes::css,
+    ecs::entity::EntityHashSet,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
     window::PrimaryWindow,
 };
 use bevy_egui::{
-    egui::{self, Pos2},
+    egui::{self, TouchDeviceId, TouchId},
     EguiContext, EguiInput, EguiPreUpdateSet, EguiRenderToImage,
 };
 use bevy_suis::{
-    field::Field, handler_actions::multi::MultiHandlerAction, input_handler::InputHandler,
-    input_method_data::SpatialInputData,
+    field::Field,
+    handler_actions::multi::MultiHandlerAction,
+    input_handler::InputHandler,
+    input_method_data::{InputData, SpatialInputData},
 };
 use window_mesh::construct_window_mesh;
 
@@ -21,10 +23,6 @@ pub struct SpatialEguiPlugin;
 
 impl Plugin for SpatialEguiPlugin {
     fn build(&self, app: &mut App) {
-        // app.add_systems(
-        //     PostUpdate,
-        //     bevy_suis::pipe_input_ctx::<()>.pipe(update_windows),
-        // );
         app.add_systems(PostUpdate, update_spatial_window_input);
         app.add_systems(
             PreUpdate,
@@ -34,8 +32,6 @@ impl Plugin for SpatialEguiPlugin {
         );
     }
 }
-#[derive(Component, Clone, Copy, Debug)]
-pub struct ImmovableSpatialEguiWindow;
 
 fn forward_egui_events(
     mut query: Query<&mut EguiInput, With<SpatialEguiWindow>>,
@@ -66,11 +62,6 @@ fn forward_egui_events(
     }
 }
 
-#[derive(Clone, Copy, Component)]
-struct GrabbedEguiWindow {
-    method_relative_transform: Transform,
-}
-
 fn update_spatial_window_input(
     mut windows: Query<(
         &SpatialEguiWindow,
@@ -80,30 +71,47 @@ fn update_spatial_window_input(
         &mut EguiContext,
         &mut SpatialEguiState,
         &Field,
+        &GlobalTransform,
     )>,
+    mut gizmos: Gizmos,
 ) {
-    for (window, mut handler, mut action, mut egui_input, mut egui_context, mut state, field) in
-        &mut windows
+    for (
+        window,
+        mut handler,
+        mut action,
+        mut egui_input,
+        mut egui_context,
+        mut state,
+        field,
+        transform,
+    ) in &mut windows
     {
         action.update(
             &mut handler,
             |data| match data.spatial_data {
-                SpatialInputData::Hand(_) | SpatialInputData::Tip(_) => data.distance < 0.15,
+                SpatialInputData::Hand(_) | SpatialInputData::Tip(_) => dbg!(data.distance) < 0.15,
                 SpatialInputData::Ray(_) => data.distance <= 0.0,
             },
             |data| {
                 let n = data.non_spatial_data;
-                n.select != 0.0
-                    || n.secondary != 0.0
-                    || n.context != 0.0
-                    || n.scroll.is_some_and(|v| v != Vec2::ZERO)
-                    || (matches!(
-                        data.spatial_data,
-                        SpatialInputData::Tip(_) | SpatialInputData::Hand(_)
-                    ) && data.distance < 0.0)
+                let input = n.select > 0.8
+                    || n.secondary > 0.8
+                    || n.context > 0.8
+                    || n.scroll.is_some_and(|v| v != Vec2::ZERO);
+                input
+                    || match data.spatial_data {
+                        SpatialInputData::Hand(hand) => {
+                            // the input is in the same space as the field, since its on the same
+                            // entity
+                            field.distance(&GlobalTransform::IDENTITY, hand.index.tip.pos)
+                                <= hand.index.tip.radius
+                        }
+                        SpatialInputData::Tip(_) => data.distance <= 0.0,
+                        // shouldn't be captured based on distance
+                        SpatialInputData::Ray(_) => false,
+                    }
             },
         );
-        info!("query");
         if action.hover_set().current().is_empty() {
             egui_input.events.push(egui::Event::PointerGone);
         }
@@ -111,7 +119,7 @@ fn update_spatial_window_input(
             .currently_hovering(&handler)
             .filter(|data| match data.spatial_data {
                 SpatialInputData::Hand(_) | SpatialInputData::Tip(_) => {
-                    (0.01..0.15).contains(&data.distance)
+                    (0.03..0.15).contains(&data.distance)
                 }
                 SpatialInputData::Ray(_) => data.distance < 0.01,
             })
@@ -123,11 +131,15 @@ fn update_spatial_window_input(
                 }
             })
         {
-            // this is already relative to the Field
-            let closest_point = actor
-                .spatial_data
-                .closest_point(field, &GlobalTransform::IDENTITY);
-            let uv = ((closest_point.xy() / window.physical_size.xy()) * -1.) + 0.5;
+            let interact_point = cursor_interact_point(field, &actor.spatial_data);
+            // point already in field space
+            let closest_point = field.closest_point(&GlobalTransform::IDENTITY, interact_point);
+            {
+                let p = transform.transform_point(interact_point.into());
+                let closest = transform.transform_point(closest_point.into());
+                gizmos.line(p, closest, Color::srgb(0.0, 1.0, 0.5));
+            }
+            let uv = ((closest_point.xy() / window.physical_size.xy()) * vec2(1.0, -1.0)) + 0.5;
             let pos = egui::Pos2 {
                 x: (uv.x * window.resolution.x as f32) / egui_context.get_mut().pixels_per_point(),
                 y: (uv.y * window.resolution.y as f32) / egui_context.get_mut().pixels_per_point(),
@@ -181,19 +193,115 @@ fn update_spatial_window_input(
                 });
             }
         }
-        for actor in action.currently_acting(&handler) {
+        for actor in action
+            .started_acting(&handler)
+            .filter(|i| touch_interact_distance(i, field) <= 0.0)
+        {
+            state.touching.insert(actor.input_method);
             // this is already relative to the Field
-            let closest_point = actor
-                .spatial_data
-                .closest_point(field, &GlobalTransform::IDENTITY);
-            // let uv = closest_point.xy() / window.physical_size.xy();
+            let touch_point = touch_interact_point(&actor);
 
-            let uv = ((closest_point.xy() / window.physical_size.xy()) * -1.) + 0.5;
+            let uv = ((touch_point.xy() / window.physical_size.xy()) * vec2(1.0, -1.0)) + 0.5;
             let pos = egui::Pos2 {
                 x: (uv.x * window.resolution.x as f32) / egui_context.get_mut().pixels_per_point(),
                 y: (uv.y * window.resolution.y as f32) / egui_context.get_mut().pixels_per_point(),
             };
+            egui_input.events.push(egui::Event::Touch {
+                device_id: TouchDeviceId(0),
+                id: TouchId(actor.input_method.to_bits()),
+                phase: egui::TouchPhase::Start,
+                pos: pos,
+                force: None,
+            });
+            egui_input.events.push(egui::Event::PointerButton {
+                pos: pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
         }
+        for actor in action
+            .currently_acting(&handler)
+            .filter(|i| state.touching.contains(&i.input_method))
+        {
+            let touch_point = touch_interact_point(&actor);
+            // let uv = closest_point.xy() / window.physical_size.xy();
+
+            let uv = ((touch_point.xy() / window.physical_size.xy()) * vec2(1.0, -1.0)) + 0.5;
+            let pos = egui::Pos2 {
+                x: (uv.x * window.resolution.x as f32) / egui_context.get_mut().pixels_per_point(),
+                y: (uv.y * window.resolution.y as f32) / egui_context.get_mut().pixels_per_point(),
+            };
+            egui_input.events.push(egui::Event::Touch {
+                device_id: TouchDeviceId(0),
+                id: TouchId(actor.input_method.to_bits()),
+                phase: egui::TouchPhase::Move,
+                pos: pos,
+                force: None,
+            });
+            egui_input.events.push(egui::Event::PointerMoved(pos));
+        }
+        for actor in action.stopped_acting(&handler) {
+            if !state.touching.remove(&actor.input_method) {
+                continue;
+            }
+            // this is already relative to the Field
+            let touch_point = touch_interact_point(&actor);
+
+            let uv = ((touch_point.xy() / window.physical_size.xy()) * vec2(1.0, -1.0)) + 0.5;
+            let pos = egui::Pos2 {
+                x: (uv.x * window.resolution.x as f32) / egui_context.get_mut().pixels_per_point(),
+                y: (uv.y * window.resolution.y as f32) / egui_context.get_mut().pixels_per_point(),
+            };
+            egui_input.events.push(egui::Event::Touch {
+                device_id: TouchDeviceId(0),
+                id: TouchId(actor.input_method.to_bits()),
+                phase: egui::TouchPhase::End,
+                pos: pos,
+                force: None,
+            });
+            egui_input.events.push(egui::Event::PointerButton {
+                pos: pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+    }
+}
+
+fn touch_interact_distance(data: &InputData, field: &Field) -> f32 {
+    match data.spatial_data {
+        SpatialInputData::Hand(hand) => {
+            // the input is in the same space as the field, since its on the same
+            // entity
+            field.distance(&GlobalTransform::IDENTITY, hand.index.tip.pos) - hand.index.tip.radius
+        }
+        SpatialInputData::Tip(_) => data.distance,
+        // shouldn't be captured based on distance
+        SpatialInputData::Ray(_) => f32::MAX,
+    }
+}
+fn touch_interact_point(data: &InputData) -> Vec3 {
+    match data.spatial_data {
+        SpatialInputData::Hand(hand) => hand.index.tip.pos,
+        SpatialInputData::Tip(tip) => tip.translation.into(),
+        // shouldn't be captured based on distance
+        SpatialInputData::Ray(_) => Vec3::ZERO,
+    }
+}
+
+fn cursor_interact_point(field: &Field, input: &SpatialInputData) -> Vec3A {
+    match input {
+        SpatialInputData::Hand(hand) => hand.index.tip.pos.lerp(hand.thumb.tip.pos, 0.5).into(),
+        SpatialInputData::Tip(tip) => tip.translation,
+        SpatialInputData::Ray(ray) => ray
+            .get_point(
+                field
+                    .raymarch(&GlobalTransform::IDENTITY, *ray)
+                    .deepest_point_ray_length,
+            )
+            .into(),
     }
 }
 
@@ -205,184 +313,6 @@ fn check(curr: bool, state: &mut bool, mut func: impl FnMut(bool)) {
         func(false)
     }
     *state = curr;
-}
-//
-// fn update_windows(
-//     images: Res<Assets<Image>>,
-//     mut windows: Query<
-//         (
-//             &mut InputHandler,
-//             &SpatialEguiWindowPhysicalSize,
-//             &mut EguiInput,
-//             &mut EguiContext,
-//             &EguiRenderToImage,
-//             Option<&mut GrabbedEguiWindow>,
-//             &mut Transform,
-//             Option<&ChildOf>,
-//             Has<ImmovableSpatialEguiWindow>,
-//         ),
-//         With<SpatialEguiWindow>,
-//     >,
-//     mut state: Local<EntityHashMap<EntityHashMap<InputState>>>,
-//     gt_query: Query<&GlobalTransform>,
-//     time: Res<Time>,
-//     mut cmds: Commands,
-// ) {
-//     for ctx in ctxs.iter() {
-//         let Ok((
-//             handler,
-//             phys_size,
-//             mut egui_input,
-//             mut egui_ctx,
-//             texture_handle,
-//             mut grabbed,
-//             mut window_transform,
-//             parent,
-//             immovable,
-//         )) = windows.get_mut(ctx.handler)
-//         else {
-//             continue;
-//         };
-//         if handler.captured_methods.is_empty() {
-//             egui_input.events.push(egui::Event::PointerGone);
-//         }
-//         let resolution = images.get(&texture_handle.0).unwrap().size_f32();
-//         let mut next_states = EntityHashMap::<InputState>::default();
-//         for (method_ctx, (method_gt, xr_controller_data, xr_hand_data, mouse_data, is_pointer)) in
-//             ctx.methods
-//                 .iter()
-//                 .filter_map(|ctx| methods.get(ctx.input_method).map(|v| (ctx, v)).ok())
-//         {
-//             let mut current_state = InputState::default();
-//             if method_ctx
-//                 .closest_point
-//                 .distance(method_ctx.input_method_location.translation)
-//                 <= f32::EPSILON
-//                 && !is_pointer
-//             {
-//                 current_state.click = true;
-//             }
-//             if let Some(controller) = xr_controller_data {
-//                 current_state.click |= controller.trigger_pulled;
-//                 current_state.grab |= controller.squeezed;
-//                 current_state.continuous_scroll +=
-//                     controller.stick_pos * time.delta_seconds() * 1000.;
-//             }
-//             if let Some(hand) = xr_hand_data {
-//                 let hand = hand.get_in_relative_space(&ctx.handler_location);
-//                 current_state.click |= hand.index.tip.pos.distance(hand.thumb.tip.pos)
-//                     > (0.002 + hand.index.tip.radius + hand.thumb.tip.radius)
-//             }
-//             if let Some(mouse) = mouse_data {
-//                 current_state.click |= mouse.left_button.pressed;
-//                 current_state.grab |= mouse.right_button.pressed;
-//                 current_state.discrete_scroll += mouse.discrete_scroll;
-//                 current_state.continuous_scroll += mouse.continuous_scroll;
-//             }
-//             let last_state = state
-//                 .entry(ctx.handler)
-//                 .or_default()
-//                 .remove(&method_ctx.input_method)
-//                 .unwrap_or_default();
-//             if (!current_state.grab) && last_state.grab {
-//                 cmds.entity(ctx.handler).remove::<GrabbedEguiWindow>();
-//             }
-//             if current_state.grab && (!last_state.grab) && !immovable {
-//                 cmds.entity(ctx.handler).insert(GrabbedEguiWindow {
-//                     method_relative_transform: Transform::from_matrix(
-//                         method_gt.compute_matrix().inverse()
-//                             * ctx.handler_location.compute_matrix(),
-//                     ),
-//                 });
-//             }
-//             if let Some(grabbed) = grabbed.as_mut() {
-//                 let offset_matrix = parent
-//                     .and_then(|e| gt_query.get(e.get()).ok())
-//                     .unwrap_or(&GlobalTransform::IDENTITY);
-//
-//                 grabbed.method_relative_transform.translation.z +=
-//                     current_state.continuous_scroll.y / 500.0;
-//                 grabbed.method_relative_transform.translation.z +=
-//                     current_state.discrete_scroll.y / 10.0;
-//
-//                 *window_transform = Transform::from_matrix(
-//                     method_gt
-//                         .mul_transform(grabbed.method_relative_transform)
-//                         .compute_matrix()
-//                         * offset_matrix.compute_matrix().inverse(),
-//                 );
-//             }
-//             if grabbed.is_none() {
-//                 let uv = ((method_ctx.closest_point.xy() / phys_size.0.xy()) * -1.) + 0.5;
-//                 let pos = egui::Pos2 {
-//                     x: (uv.x * resolution.x) / egui_ctx.get_mut().pixels_per_point(),
-//                     y: (uv.y * resolution.y) / egui_ctx.get_mut().pixels_per_point(),
-//                 };
-//                 egui_input.events.push(egui::Event::PointerMoved(pos));
-//                 if current_state.click && !last_state.click {
-//                     egui_input.events.push(egui::Event::PointerButton {
-//                         pos,
-//                         button: egui::PointerButton::Primary,
-//                         pressed: true,
-//                         modifiers: egui::Modifiers::NONE,
-//                     });
-//                 }
-//                 if !current_state.click && last_state.click {
-//                     egui_input.events.push(egui::Event::PointerButton {
-//                         pos,
-//                         button: egui::PointerButton::Primary,
-//                         pressed: false,
-//                         modifiers: egui::Modifiers::NONE,
-//                     });
-//                 }
-//                 if current_state.discrete_scroll != Vec2::ZERO {
-//                     egui_input.events.push(egui::Event::MouseWheel {
-//                         unit: egui::MouseWheelUnit::Line,
-//                         delta: egui::Vec2 {
-//                             x: current_state.discrete_scroll.x,
-//                             y: current_state.discrete_scroll.y,
-//                         },
-//                         modifiers: egui::Modifiers::NONE,
-//                     });
-//                 }
-//                 if current_state.continuous_scroll != Vec2::ZERO {
-//                     egui_input.events.push(egui::Event::MouseWheel {
-//                         unit: egui::MouseWheelUnit::Point,
-//                         delta: egui::Vec2 {
-//                             x: current_state.continuous_scroll.x,
-//                             y: current_state.continuous_scroll.y,
-//                         },
-//                         modifiers: egui::Modifiers::NONE,
-//                     });
-//                 }
-//             }
-//             next_states.insert(method_ctx.input_method, current_state);
-//         }
-//         for state in mem::replace(state.entry(ctx.handler).or_default(), next_states).into_values()
-//         {
-//             if state.click {
-//                 egui_input.events.push(egui::Event::PointerButton {
-//                     pos: Pos2::ZERO,
-//                     button: egui::PointerButton::Primary,
-//                     pressed: false,
-//                     modifiers: egui::Modifiers::NONE,
-//                 });
-//             }
-//             if state.grab {
-//                 cmds.entity(ctx.handler).remove::<GrabbedEguiWindow>();
-//             }
-//         }
-//     }
-// }
-
-#[derive(Default)]
-struct InputState {
-    click: bool,
-    grab: bool,
-    /// How many Lines to scroll
-    discrete_scroll: Vec2,
-    /// How many Pixels to scroll
-    continuous_scroll: Vec2,
 }
 
 pub struct SpawnSpatialEguiWindowCommand {
@@ -402,7 +332,7 @@ pub struct SpatialEguiWindow {
 }
 #[derive(Default, Component)]
 struct SpatialEguiState {
-    has_pointers: bool,
+    touching: EntityHashSet,
     left_clicked: bool,
     right_clicked: bool,
     middle_clicked: bool,

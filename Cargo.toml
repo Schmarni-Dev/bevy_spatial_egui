@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 bevy = "0.16"
 bevy_egui = "0.34.1"
-bevy-suis = { git = "https://github.com/Schmarni-Dev/bevy-suis" }
+bevy-suis = { git = "https://github.com/Schmarni-Dev/bevy-suis", default-features = false }
 
 [dev-dependencies]
 bevy_panorbit_camera = "0.26"

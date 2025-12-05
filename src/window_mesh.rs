@@ -103,10 +103,10 @@ pub fn construct_window_mesh(size: Vec2, depth: f32) -> Mesh {
         ],
     );
     // idk why i have to reverse left/right
-    let top_left = [1., 0.];
-    let top_right = [0., 0.];
-    let bottom_left = [1., 1.];
-    let bottom_right = [0., 1.];
+    let top_right = [1., 0.];
+    let top_left = [0., 0.];
+    let bottom_right = [1., 1.];
+    let bottom_left = [0., 1.];
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_UV_0,
         vec![
